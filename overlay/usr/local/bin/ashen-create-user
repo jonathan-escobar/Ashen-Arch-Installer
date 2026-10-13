@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if ! id ashen >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -G video,input,render ashen
+fi
+# No password or sudo access; autologin is restricted to tty1 on the live medium.
+chown -R ashen:ashen /home/ashen
