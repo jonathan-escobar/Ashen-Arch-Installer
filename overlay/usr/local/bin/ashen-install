@@ -1,0 +1,36 @@
+#!/usr/bin/python3
+"""Privileged executable used ONLY by Ashen Live; accepts JSON via stdin."""
+import argparse
+import json
+import sys
+
+sys.path.insert(0, '/opt/ashen-installer')
+from install_core import InstallError, Plan, install, preflight
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true', help='Actually erase and install')
+    parser.add_argument('--check', action='store_true', help='Validate without changes')
+    args = parser.parse_args()
+    if args.execute == args.check:
+        parser.error('Use exactly one of --check or --execute')
+    try:
+        payload = sys.stdin.buffer.read(8192 + 1)
+        if len(payload) > 8192:
+            raise InstallError('Plan exceeds maximum size')
+        plan = Plan.from_dict(json.loads(payload))
+        if args.execute:
+            install(plan)
+        else:
+            preflight(plan)
+            print(json.dumps({'ok': True, 'target': plan.disk, 'mode': 'check-only'}), flush=True)
+    except (InstallError, ValueError, TypeError, OSError) as exc:
+        # Never dump payloads, subprocess output or user password in errors.
+        print(json.dumps({'error': str(exc)}, ensure_ascii=False), flush=True)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

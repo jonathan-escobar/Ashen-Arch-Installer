@@ -2,43 +2,53 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="$ROOT/build/profile"
-if [[ ! -d /usr/share/archiso/configs/releng ]]; then echo 'Instala archiso (sudo pacman -S archiso)' >&2; exit 1; fi
-rm -rf "$PROFILE"
-mkdir -p "$ROOT/build"
+[[ -d /usr/share/archiso/configs/releng ]] || { echo 'Install archiso: sudo pacman -S archiso' >&2; exit 1; }
+rm -rf -- "$PROFILE"
+mkdir -p -- "$ROOT/build"
 cp -a /usr/share/archiso/configs/releng "$PROFILE"
-python - "$PROFILE/profiledef.sh" <<'PY2'
-import pathlib,sys,re
-p=pathlib.Path(sys.argv[1]); s=p.read_text()
-for key,value in {'iso_name':'ashenarch','iso_publisher':'Ashen Arch Project','iso_application':'Ashen Arch Live Preview'}.items():
-    s,n=re.subn(r'^'+key+r'=.*$',key+'="'+value+'"',s,flags=re.M)
-    if not n: raise SystemExit('Falta '+key+' en profiledef.sh')
+python - "$PROFILE/profiledef.sh" <<'PY'
+from pathlib import Path
+import re
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+for key, value in {'iso_name':'ashenarch', 'iso_publisher':'Ashen Arch Project',
+                   'iso_application':'Ashen Arch Installer v0.5'}.items():
+    s, n = re.subn('^' + key + '=.*$', key + '="' + value + '"', s, flags=re.M)
+    if n != 1:
+        raise SystemExit('Missing/duplicate ' + key + ' in archiso profiledef.sh')
+needle='file_permissions=('
+if needle not in s:
+    raise SystemExit('profiledef.sh is missing file_permissions array')
+permissions = {
+    '/usr/local/bin/ashen-create-user': '0:0:755',
+    '/usr/local/bin/ashen-install': '0:0:755',
+    '/etc/sudoers.d/ashen-installer': '0:0:440',
+    '/etc/skel/.xinitrc': '0:0:755',
+}
+addition='\n' + ''.join(f'  ["{name}"]="{mode}"\n' for name, mode in permissions.items())
+s=s.replace(needle, needle+addition, 1)
 p.write_text(s)
-PY2
-for pkg in networkmanager python pyside6 xorg-server xorg-xinit xorg-xauth xterm openbox mesa efibootmgr; do
-  grep -Fxq "$pkg" "$PROFILE/packages.x86_64" || printf '%s\n' "$pkg" >> "$PROFILE/packages.x86_64"
+PY
+for pkg in networkmanager python pyside6 xorg-server xorg-xinit xorg-xauth \
+           xterm openbox mesa efibootmgr parted dosfstools e2fsprogs \
+           arch-install-scripts sudo polkit; do
+    grep -Fxq "$pkg" "$PROFILE/packages.x86_64" || echo "$pkg" >> "$PROFILE/packages.x86_64"
 done
 cp -a "$ROOT/overlay/." "$PROFILE/airootfs/"
-# releng usa networkd+iwd: inhabilitarlos en la copia del perfil, dejando sus herramientas instaladas.
-for name in iwd.service systemd-networkd.service systemd-networkd-wait-online.service; do
-  rm -f "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/$name" \
-        "$PROFILE/airootfs/etc/systemd/system/network-online.target.wants/$name"
+# releng enables systemd-networkd and iwd; disable both on this COPY of releng.
+for service in iwd.service systemd-networkd.service systemd-networkd-wait-online.service; do
+    rm -f "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/$service" \
+          "$PROFILE/airootfs/etc/systemd/system/network-online.target.wants/$service"
 done
-mkdir -p "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants"
-ln -sfn /usr/lib/systemd/system/NetworkManager.service "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service"
-ln -sfn /etc/systemd/system/ashen-live-user.service "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/ashen-live-user.service"
-mkdir -p "$PROFILE/airootfs/etc/systemd/system/getty@tty1.service.d"
+mkdir -p "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants" \
+         "$PROFILE/airootfs/etc/systemd/system/getty@tty1.service.d"
+ln -sfn /usr/lib/systemd/system/NetworkManager.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service"
+ln -sfn /etc/systemd/system/ashen-live-user.service \
+    "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/ashen-live-user.service"
 cat > "$PROFILE/airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf" <<'EOF'
 [Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin ashen --noclear %I $TERM
 EOF
-chmod +x "$PROFILE/airootfs/usr/local/bin/ashen-create-user"
-# archiso stores default files with explicit permissions in profiledef; allow executable initializer.
-python - "$PROFILE/profiledef.sh" <<'PY2'
-import pathlib,sys
-p=pathlib.Path(sys.argv[1]);s=p.read_text()
-needle='file_permissions=('; insert='  ["/usr/local/bin/ashen-create-user"]="0:0:755"\n'
-if needle not in s: raise SystemExit('No file_permissions found')
-s=s.replace(needle,needle+'\n'+insert,1);p.write_text(s)
-PY2
-printf 'Perfil preparado: %s\n' "$PROFILE"
+printf 'Ashen archiso profile ready: %s\n' "$PROFILE"

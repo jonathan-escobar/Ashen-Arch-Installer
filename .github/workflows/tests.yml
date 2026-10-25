@@ -1,0 +1,21 @@
+name: Test installer
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python syntax
+        run: python -m compileall -q overlay tests
+      - name: Python unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Static safety tests
+        run: python tests/test_safety.py
+      - name: Bash syntax
+        run: bash -n scripts/*.sh overlay/usr/local/bin/ashen-create-user

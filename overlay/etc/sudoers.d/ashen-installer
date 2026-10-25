@@ -1,0 +1,2 @@
+# Live ISO only: ashen can run only the validated privileged installer.
+ashen ALL=(root) NOPASSWD: /usr/local/bin/ashen-install

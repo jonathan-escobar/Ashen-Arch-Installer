@@ -1,14 +1,13 @@
-"""Native Wi-Fi selection panel for the Ashen installer."""
+"""Live Wi-Fi GUI; tasks execute off the UI thread."""
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton,
-    QComboBox, QListWidget, QListWidgetItem, QLineEdit, QHBoxLayout,
-    QCheckBox)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
+                                QListWidget, QListWidgetItem, QLineEdit, QHBoxLayout)
 import network_backend as nm
 
 
-class Task(QThread):
-    completed = Signal(object)
-    failed = Signal(str)
+class Job(QThread):
+    success = Signal(object)
+    error = Signal(str)
 
     def __init__(self, function, *args):
         super().__init__()
@@ -17,119 +16,94 @@ class Task(QThread):
 
     def run(self):
         try:
-            self.completed.emit(self.function(*self.args))
+            self.success.emit(self.function(*self.args))
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.error.emit(str(exc))
 
 
 class WifiPanel(QWidget):
     def __init__(self):
         super().__init__()
-        self.task = None
-        self.aps = []
+        self.job = None
+        self.access_points = []
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('Wi-Fi connections'))
-        self.status = QLabel('Checking wireless adapters…')
-        self.status.setWordWrap(True)
+        self.status = QLabel('Buscando adaptadores Wi-Fi…')
         layout.addWidget(self.status)
-        line = QHBoxLayout()
+        row = QHBoxLayout()
         self.adapters = QComboBox()
-        self.enable = QPushButton('Enable Wi-Fi')
-        self.refresh = QPushButton('Scan networks')
-        line.addWidget(self.adapters)
-        line.addWidget(self.enable)
-        line.addWidget(self.refresh)
-        layout.addLayout(line)
-        self.list = QListWidget()
-        layout.addWidget(self.list)
+        self.scan_button = QPushButton('Buscar redes')
+        self.enable_button = QPushButton('Activar Wi-Fi')
+        for item in (self.adapters, self.scan_button, self.enable_button):
+            row.addWidget(item)
+        layout.addLayout(row)
+        self.networks = QListWidget()
+        layout.addWidget(self.networks)
         self.password = QLineEdit()
-        self.password.setPlaceholderText('Wi-Fi password — protected networks only')
+        self.password.setPlaceholderText('Contraseña de la red')
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password)
-        self.show_pass = QCheckBox('Show password')
-        layout.addWidget(self.show_pass)
-        self.join = QPushButton('Connect to selected network')
+        self.join = QPushButton('Conectar')
         layout.addWidget(self.join)
-        self.refresh.clicked.connect(self.scan)
-        self.enable.clicked.connect(self.enable_wifi)
+        self.scan_button.clicked.connect(self.scan)
+        self.enable_button.clicked.connect(lambda: self.start(nm.enable_wifi, lambda _: self.scan()))
         self.join.clicked.connect(self.connect)
-        self.show_pass.toggled.connect(lambda yes: self.password.setEchoMode(
-            QLineEdit.EchoMode.Normal if yes else QLineEdit.EchoMode.Password))
-        self.list.currentRowChanged.connect(self.selection_changed)
-        self.load_devices()
+        self.networks.currentRowChanged.connect(self.selection_changed)
+        self.start(nm.wifi_devices, self.loaded)
 
-    def busy(self, active):
-        for widget in (self.adapters, self.enable, self.refresh, self.join):
-            widget.setEnabled(not active)
-
-    def start(self, function, on_success, *args):
-        if self.task is not None and self.task.isRunning():
+    def start(self, fun, callback, *args):
+        if self.job and self.job.isRunning():
             return
-        self.busy(True)
-        task = Task(function, *args)
-        self.task = task
-        task.completed.connect(on_success)
-        task.failed.connect(lambda error: self.status.setText('Error: ' + error))
-        task.finished.connect(lambda: self.busy(False))
-        task.start()
+        self.job = Job(fun, *args)
+        for widget in (self.adapters, self.scan_button, self.enable_button, self.join):
+            widget.setEnabled(False)
+        self.job.success.connect(callback)
+        self.job.error.connect(lambda error: self.status.setText('Error: ' + error))
+        self.job.finished.connect(self.finished)
+        self.job.start()
 
-    def load_devices(self):
-        self.start(nm.wifi_devices, self.devices_loaded)
+    def finished(self):
+        for widget in (self.adapters, self.scan_button, self.enable_button, self.join):
+            widget.setEnabled(True)
 
-    def devices_loaded(self, devices):
-        self.adapters.clear()
+    def loaded(self, devices):
         self.adapters.addItems(devices)
-        if not devices:
-            self.status.setText('No Wi-Fi adapter detected. VirtualBox NAT exposes Ethernet. On a real PC, supported wireless hardware will appear here.')
-            self.list.clear()
-            return
-        self.status.setText('Wireless adapter found. Scanning networks…')
-        # Task has emitted completed but may still be finishing; launch shortly through finished event.
-        self.task.finished.connect(self.scan)
-
-    def enable_wifi(self):
-        self.status.setText('Enabling Wi-Fi…')
-        self.start(nm.enable_wifi, lambda _: self.scan())
+        if devices:
+            self.status.setText('Adaptador detectado. Selecciona Buscar redes.')
+        else:
+            self.status.setText('No se encontró Wi-Fi. VirtualBox NAT aparece como Ethernet; USB passthrough para Wi-Fi real.')
 
     def scan(self):
         device = self.adapters.currentText()
-        if not device:
-            self.status.setText('No wireless adapter available')
-            return
-        self.status.setText('Scanning…')
-        self.start(nm.scan, self.scan_finished, device)
+        if device:
+            self.status.setText('Buscando redes…')
+            # Release completed worker before starting the new worker.
+            if self.job and self.job.isRunning():
+                self.job.finished.connect(lambda: self.start(nm.scan, self.scanned, device))
+            else:
+                self.start(nm.scan, self.scanned, device)
 
-    def scan_finished(self, access_points):
-        self.aps = access_points
-        self.list.clear()
-        for ap in access_points:
-            prefix = '✓ ' if ap.in_use else ''
-            label = f'{prefix}{ap.ssid}   ·   {ap.signal}%   ·   {ap.security or "Open"}'
-            item = QListWidgetItem(label)
+    def scanned(self, aps):
+        self.access_points = aps
+        self.networks.clear()
+        for ap in aps:
+            item = QListWidgetItem(f'{"✓ " if ap.in_use else ""}{ap.ssid} · {ap.signal}% · {ap.security}')
             item.setData(Qt.ItemDataRole.UserRole, ap)
-            self.list.addItem(item)
-        self.status.setText(f'{len(access_points)} networks detected' if access_points else 'No networks found. Try Enable Wi-Fi and Scan networks.')
+            self.networks.addItem(item)
+        self.status.setText(f'{len(aps)} redes disponibles')
 
-    def selection_changed(self, _row):
-        item = self.list.currentItem()
+    def selection_changed(self, _):
+        self.password.clear()
+        item = self.networks.currentItem()
         ap = item.data(Qt.ItemDataRole.UserRole) if item else None
         self.password.setEnabled(bool(ap and ap.protected))
-        self.password.clear()
 
     def connect(self):
-        item = self.list.currentItem()
-        if item is None:
-            self.status.setText('Select a network first')
+        item = self.networks.currentItem()
+        if not item:
+            self.status.setText('Selecciona una red')
             return
         ap = item.data(Qt.ItemDataRole.UserRole)
         password = self.password.text() if ap.protected else ''
         self.password.clear()
-        self.status.setText(f'Connecting to {ap.ssid}…')
-        self.start(nm.connect, self.connected, ap, password)
-
-    def connected(self, _):
-        self.status.setText('Wi-Fi connected. Checking Internet access…')
-        self.task.finished.connect(lambda: self.start(nm.internet_check, self.checked))
-
-    def checked(self, online):
-        self.status.setText('Connected — Internet reachable' if online else 'Connected to Wi-Fi, but Internet was not verified. Check DNS or captive portal.')
+        self.status.setText('Conectando…')
+        self.start(nm.connect, lambda _: self.status.setText('Conexión establecida'), ap, password)

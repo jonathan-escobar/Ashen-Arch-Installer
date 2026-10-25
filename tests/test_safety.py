@@ -1,11 +1,14 @@
+"""Static fail-closed checks: complementary to runtime validation."""
 from pathlib import Path
+
 root = Path(__file__).resolve().parents[1]
-installer = (root / 'overlay/opt/ashen-installer/main.py').read_text()
-backend = (root / 'overlay/opt/ashen-installer/network_backend.py').read_text()
-for command in ('mkfs.', 'pacstrap ', 'grub-install', 'cryptsetup luksFormat', 'parted -s'):
-    assert command not in installer, command
-    assert command not in backend, command
-assert "read_cmd('efibootmgr', '-v')" in installer
-assert 'pass_fds=' in backend
-assert 'wifi-sec.key-mgmt' in backend
-print('Static disk-safety checks passed')
+ui = (root / 'overlay/opt/ashen-installer/main.py').read_text()
+helper = (root / 'overlay/usr/local/bin/ashen-install').read_text()
+core = (root / 'overlay/opt/ashen-installer/install_core.py').read_text()
+assert 'BORRAR {plan.disk}' in ui
+assert 'plan.confirmation != f"BORRAR {plan.disk}"' in core
+assert 'preflight(plan, root=True)' in core
+assert 'subprocess.run(argv' in core
+assert 'shell=True' not in core
+assert '--execute' in helper
+print('Safety structure checks passed')
